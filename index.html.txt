@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <title>MediaPipe Face Monitor</title>
+  <style>
+    body {
+      margin: 0;
+      background: #111;
+      color: white;
+      font-family: Arial, sans-serif;
+      text-align: center;
+    }
+    #container {
+      position: relative;
+      width: 100vw;
+      height: 100vh;
+      overflow: hidden;
+    }
+    video, canvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+    }
+    #info {
+      position: absolute;
+      top: 15px;
+      left: 15px;
+      background: rgba(0,0,0,0.5);
+      padding: 12px;
+      border-radius: 10px;
+      font-size: 16px;
+      line-height: 1.6;
+      z-index: 10;
+    }
+  </style>
+</head>
+<body>
+
+<div id="container">
+  <video id="video" autoplay playsinline></video>
+  <canvas id="canvas"></canvas>
+
+  <div id="info">
+    <div id="distance">Face distance: --</div>
+    <div id="time">Screen time: 0 sec</div>
+    <div id="blink">Blinks: 0</div>
+  </div>
+</div>
+
+<!-- MediaPipe -->
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils"></script>
+
+<script>
+/* ========= 基本設定 ========= */
+const video = document.getElementById("video");
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
+
+let screenTime = 0;
+let lastTime = Date.now();
+
+let blinkCount = 0;
+let eyeClosed = false;
+const EAR_THRESHOLD = 0.23;
+
+/* ========= 眼睛 landmark ========= */
+const LEFT_EYE = [33, 160, 158, 133, 153, 144];
+const RIGHT_EYE = [362, 385, 387, 263, 373, 380];
+
+/* ========= 攝影機 ========= */
+navigator.mediaDevices.getUserMedia({ video: true }).then(stream => {
+  video.srcObject = stream;
+});
+
+/* ========= EAR 計算 ========= */
+function distance(p1, p2) {
+  return Math.hypot(p1.x - p2.x, p1.y - p2.y);
+}
+
+function calculateEAR(landmarks, eyeIndex) {
+  const p = eyeIndex.map(i => landmarks[i]);
+  const A = distance(p[1], p[5]);
+  const B = distance(p[2], p[4]);
+  const C = distance(p[0], p[3]);
+  return (A + B) / (2.0 * C);
+}
+
+/* ========= MediaPipe FaceMesh ========= */
+const faceMesh = new FaceMesh({
+  locateFile: file =>
+    `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`
+});
+
+faceMesh.setOptions({
+  maxNumFaces: 1,
+  refineLandmarks: true,
+  minDetectionConfidence: 0.5,
+  minTrackingConfidence: 0.5
+});
+
+/* ========= 偵測結果 ========= */
+faceMesh.onResults(results => {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  if (results.multiFaceLandmarks) {
+    const now = Date.now();
+    screenTime += (now - lastTime) / 1000;
+    lastTime = now;
+
+    document.getElementById("time").innerText =
+      `Screen time: ${Math.floor(screenTime)} sec`;
+
+    const lm = results.multiFaceLandmarks[0];
+
+    /* ===== 臉距離（比例）===== */
+    const xs = lm.map(p => p.x);
+    const ys = lm.map(p => p.y);
+    const faceArea =
+      (Math.max(...xs) - Math.min(...xs)) *
+      (Math.max(...ys) - Math.min(...ys));
+
+    document.getElementById("distance").innerText =
+      `Face distance: ${faceArea.toFixed(3)}`;
+
+    /* ===== 眨眼偵測 ===== */
+    const leftEAR = calculateEAR(lm, LEFT_EYE);
+    const rightEAR = calculateEAR(lm, RIGHT_EYE);
+    const ear = (leftEAR + rightEAR) / 2;
+
+    if (ear < EAR_THRESHOLD) {
+      if (!eyeClosed) eyeClosed = true;
+    } else {
+      if (eyeClosed) {
+        blinkCount++;
+        eyeClosed = false;
+      }
+    }
+
+    document.getElementById("blink").innerText =
+      `Blinks: ${blinkCount}`;
+  } else {
+    lastTime = Date.now(); // 沒臉時不累計時間
+  }
+});
+
+/* ========= 啟動攝影機 ========= */
+const camera = new Camera(video, {
+  onFrame: async () => {
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    await faceMesh.send({ image: video });
+  },
+  width: 640,
+  height: 480
+});
+
+camera.start();
+</script>
+
+</body>
+</html>
